@@ -1,12 +1,12 @@
-package com.mg.wazealerts.monitor
+package com.mg.trafficalerts.monitor
 
 import android.app.Notification
 import android.content.Intent
 import android.os.Build
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
-import com.mg.wazealerts.AppLogger
-import com.mg.wazealerts.settings.AppSettings
+import com.mg.trafficalerts.AppLogger
+import com.mg.trafficalerts.settings.AppSettings
 
 class MapsNavigationListener : NotificationListenerService() {
 
@@ -56,7 +56,7 @@ class MapsNavigationListener : NotificationListenerService() {
             settings.navDestination = ""
         }
 
-        val intent = Intent("com.mg.wazealerts.MAPS_NAVIGATION_STATE").setPackage(packageName)
+        val intent = Intent("com.mg.trafficalerts.MAPS_NAVIGATION_STATE").setPackage(packageName)
         intent.putExtra("isNavigating", isNavigating)
         sendBroadcast(intent)
 

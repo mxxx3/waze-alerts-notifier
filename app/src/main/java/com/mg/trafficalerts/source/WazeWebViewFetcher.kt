@@ -1,4 +1,4 @@
-package com.mg.wazealerts.source
+package com.mg.trafficalerts.source
 
 import android.annotation.SuppressLint
 import android.content.Context
@@ -11,7 +11,7 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
-import com.mg.wazealerts.AppLogger
+import com.mg.trafficalerts.AppLogger
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex

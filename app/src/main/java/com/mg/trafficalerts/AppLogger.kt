@@ -1,4 +1,4 @@
-package com.mg.wazealerts
+package com.mg.trafficalerts
 
 import android.content.Context
 import android.net.Uri

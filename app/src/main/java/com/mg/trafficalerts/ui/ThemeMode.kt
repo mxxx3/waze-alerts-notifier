@@ -1,4 +1,4 @@
-package com.mg.wazealerts.ui
+package com.mg.trafficalerts.ui
 
 enum class ThemeMode(val label: String) {
     SYSTEM("System"),

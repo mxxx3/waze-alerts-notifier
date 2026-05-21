@@ -1,11 +1,11 @@
-package com.mg.wazealerts.monitor
+package com.mg.trafficalerts.monitor
 
 import android.app.NotificationManager
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import com.mg.wazealerts.AppLogger
-import com.mg.wazealerts.store.AlertStore
+import com.mg.trafficalerts.AppLogger
+import com.mg.trafficalerts.store.AlertStore
 
 class NotificationActionReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
@@ -31,7 +31,7 @@ class NotificationActionReceiver : BroadcastReceiver() {
 
     companion object {
         private const val TAG = "NotificationAction"
-        private const val ACTION_MARK_READ = "com.mg.wazealerts.ACTION_MARK_READ"
+        private const val ACTION_MARK_READ = "com.mg.trafficalerts.ACTION_MARK_READ"
         private const val EXTRA_ALERT_ID = "extra_alert_id"
         private const val EXTRA_ALERT_IDS = "extra_alert_ids"
         private const val SUMMARY_NOTIFICATION_ID = 4101

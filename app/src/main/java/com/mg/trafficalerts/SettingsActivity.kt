@@ -1,8 +1,11 @@
-package com.mg.wazealerts
+package com.mg.trafficalerts
 
 import android.Manifest
 import android.app.Activity
 import android.app.AlarmManager
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -22,19 +25,29 @@ import android.widget.ScrollView
 import android.widget.SeekBar
 import android.widget.Switch
 import android.widget.TextView
+import android.widget.Toast
+import androidx.core.app.NotificationCompat
+import androidx.core.app.Person
+import androidx.core.app.RemoteInput
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
-import com.mg.wazealerts.model.AlertKind
-import com.mg.wazealerts.monitor.AlertMonitorService
-import com.mg.wazealerts.settings.AppSettings
-import com.mg.wazealerts.ui.ThemeMode
-import com.mg.wazealerts.ui.UiPalette
+import com.mg.trafficalerts.MainActivity
+import com.mg.trafficalerts.model.AlertKind
+import com.mg.trafficalerts.monitor.AlertMonitorService
+import com.mg.trafficalerts.settings.AppSettings
+import com.mg.trafficalerts.store.AlertStore
+import com.mg.trafficalerts.ui.ThemeMode
+import com.mg.trafficalerts.ui.UiPalette
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 class SettingsActivity : Activity() {
     private lateinit var settings: AppSettings
+    private lateinit var alertStore: AlertStore
     private lateinit var root: LinearLayout
     private lateinit var palette: UiPalette
 
@@ -42,6 +55,7 @@ class SettingsActivity : Activity() {
         super.onCreate(savedInstanceState)
         WindowCompat.setDecorFitsSystemWindows(window, false)
         settings = AppSettings(this)
+        alertStore = AlertStore(this)
         palette = UiPalette.from(this, settings.themeMode)
         palette.applyWindow(this)
         render()
@@ -71,6 +85,7 @@ class SettingsActivity : Activity() {
         controlsPanel()
         navigationPanel()
         sourcesPanel()
+        diagnosticsPanel()
         behaviorPanel()
         cachePanel()
         alertTypesPanel()
@@ -249,6 +264,116 @@ class SettingsActivity : Activity() {
             }, blockParams(top = 8.dp))
 
         })
+    }
+
+    private fun diagnosticsPanel() {
+        root.addView(panel {
+            addView(sectionHeader("Diagnostics", "Provider health, runtime state, and notification test tools."))
+
+            val health = alertStore.providerHealth()
+            val providers = listOf("waze" to "Waze", "osm-camera" to "OpenStreetMap", "tomtom" to "TomTom", "demo" to "Demo")
+            providers.forEach { (key, label) ->
+                val item = health[key]
+                addView(diagnosticRow(
+                    title = label,
+                    value = when {
+                        item == null -> "No refresh yet"
+                        !item.enabled -> "Disabled"
+                        item.success -> "OK · ${item.alertCount} alert(s) · ${formatAge(item.updatedAtMillis)}"
+                        else -> "Failed · ${item.message.ifBlank { "unknown" }} · ${formatAge(item.updatedAtMillis)}"
+                    },
+                    ok = item?.success == true || item?.enabled == false
+                ), blockParams(top = 8.dp))
+            }
+
+            addView(diagnosticRow("Runtime", alertStore.diagnosticsSummary(), ok = true), blockParams(top = 10.dp))
+            addView(Button(this@SettingsActivity).apply {
+                text = "Post test alert notification"
+                palette.styleButton(this)
+                setOnClickListener { postTestNotification() }
+            }, blockParams(top = 12.dp))
+        })
+    }
+
+    private fun diagnosticRow(title: String, value: String, ok: Boolean): LinearLayout =
+        LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(12.dp, 9.dp, 12.dp, 9.dp)
+            background = rounded(if (ok) palette.surface else 0x22CC3D3D, palette.border)
+            addView(text(title, 13f, palette.title, bold = true))
+            addView(text(value, 12f, if (ok) palette.secondary else palette.danger), blockParams(top = 3.dp))
+        }
+
+    private fun postTestNotification() {
+        if (Build.VERSION.SDK_INT >= 33 && !isPermissionGranted(Manifest.permission.POST_NOTIFICATIONS)) {
+            ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQ_NOTIFICATIONS)
+            return
+        }
+        val nm = getSystemService(NotificationManager::class.java)
+        if (Build.VERSION.SDK_INT >= 26) {
+            nm.createNotificationChannel(NotificationChannel(CHANNEL_ALERTS, "Road alerts", NotificationManager.IMPORTANCE_HIGH))
+        }
+
+        val alertId = "test:${System.currentTimeMillis()}"
+        val notificationId = alertId.hashCode()
+        val senderName = "Police: ↑ ahead 400 m"
+        val sender = Person.Builder().setName(senderName).setBot(true).build()
+        val style = NotificationCompat.MessagingStyle(sender)
+            .setConversationTitle(senderName)
+            .setGroupConversation(false)
+            .addMessage("Test alert from diagnostics", System.currentTimeMillis(), sender)
+        val replyFlags = PendingIntent.FLAG_UPDATE_CURRENT or
+            if (Build.VERSION.SDK_INT >= 31) PendingIntent.FLAG_MUTABLE else 0
+        val replyIntent = PendingIntent.getBroadcast(
+            this,
+            notificationId,
+            Intent(this, com.mg.trafficalerts.monitor.NotificationActionReceiver::class.java)
+                .setAction(ACTION_REPLY)
+                .putExtra(EXTRA_ALERT_ID, alertId),
+            replyFlags
+        )
+        val replyAction = NotificationCompat.Action.Builder(R.mipmap.ic_launcher, "Reply", replyIntent)
+            .addRemoteInput(RemoteInput.Builder(KEY_REPLY).setLabel("Reply").build())
+            .setAllowGeneratedReplies(true)
+            .setSemanticAction(NotificationCompat.Action.SEMANTIC_ACTION_REPLY)
+            .setShowsUserInterface(false)
+            .build()
+        val markReadIntent = PendingIntent.getBroadcast(
+            this,
+            notificationId + ACTION_REQUEST_OFFSET,
+            Intent(this, com.mg.trafficalerts.monitor.NotificationActionReceiver::class.java)
+                .setAction(ACTION_MARK_READ)
+                .putExtra(EXTRA_ALERT_ID, alertId),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val markReadAction = NotificationCompat.Action.Builder(R.mipmap.ic_launcher, "Mark as read", markReadIntent)
+            .setSemanticAction(NotificationCompat.Action.SEMANTIC_ACTION_MARK_AS_READ)
+            .setShowsUserInterface(false)
+            .build()
+        val contentIntent = PendingIntent.getActivity(
+            this,
+            0,
+            Intent(this, MainActivity::class.java),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val notification = NotificationCompat.Builder(this, CHANNEL_ALERTS)
+            .setSmallIcon(R.mipmap.ic_launcher)
+            .setContentTitle(senderName)
+            .setContentText("Test alert from diagnostics")
+            .setStyle(style)
+            .setContentIntent(contentIntent)
+            .addAction(replyAction)
+            .addAction(markReadAction)
+            .setAutoCancel(false)
+            .setOnlyAlertOnce(true)
+            .setTimeoutAfter(10 * 60_000L)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .build()
+        nm.notify(notificationId, notification)
+        alertStore.saveActiveNotificationIds(alertStore.activeNotificationIds() + notificationId)
+        Toast.makeText(this, "Test alert posted", Toast.LENGTH_SHORT).show()
     }
 
     private fun alertTypesPanel() {
@@ -600,13 +725,13 @@ class SettingsActivity : Activity() {
 
     private fun startMonitoring() {
         requestNeededPermissions()
-        com.mg.wazealerts.monitor.ServiceWatchdog.startMonitoring(this)
-        com.mg.wazealerts.monitor.ServiceWatchdog.scheduleWatchdog(this)
+        com.mg.trafficalerts.monitor.ServiceWatchdog.startMonitoring(this)
+        com.mg.trafficalerts.monitor.ServiceWatchdog.scheduleWatchdog(this)
     }
 
     private fun stopMonitoring() {
-        com.mg.wazealerts.monitor.ServiceWatchdog.cancelWatchdog(this)
-        com.mg.wazealerts.monitor.ServiceWatchdog.cancelHeartbeat(this)
+        com.mg.trafficalerts.monitor.ServiceWatchdog.cancelWatchdog(this)
+        com.mg.trafficalerts.monitor.ServiceWatchdog.cancelHeartbeat(this)
         stopService(Intent(this, AlertMonitorService::class.java))
     }
 
@@ -616,6 +741,16 @@ class SettingsActivity : Activity() {
     private fun formatRefresh(millis: Long): String {
         val seconds = millis / 1000
         return if (seconds < 60) "${seconds}s" else "${seconds / 60} min"
+    }
+
+    private fun formatAge(timeMillis: Long): String {
+        if (timeMillis <= 0L) return "never"
+        val ageSeconds = ((System.currentTimeMillis() - timeMillis) / 1000).coerceAtLeast(0)
+        return when {
+            ageSeconds < 60 -> "${ageSeconds}s ago"
+            ageSeconds < 3600 -> "${ageSeconds / 60}m ago"
+            else -> SimpleDateFormat("HH:mm", Locale.US).format(Date(timeMillis))
+        }
     }
 
     private fun stepIndexLong(steps: LongArray, value: Long): Int =
@@ -631,6 +766,12 @@ class SettingsActivity : Activity() {
         private const val REQ_LOCATION = 100
         private const val REQ_BG_LOCATION = 101
         private const val REQ_NOTIFICATIONS = 102
+        private const val CHANNEL_ALERTS = "road_alerts"
+        private const val ACTION_REPLY = "com.mg.trafficalerts.ACTION_REPLY"
+        private const val ACTION_MARK_READ = "com.mg.trafficalerts.ACTION_MARK_READ"
+        private const val EXTRA_ALERT_ID = "extra_alert_id"
+        private const val KEY_REPLY = "key_reply"
+        private const val ACTION_REQUEST_OFFSET = 17_000
         private val RADIUS_STEPS = intArrayOf(100, 200, 300, 500, 1000, 2000, 3000)
         private val REFRESH_STEPS_MILLIS = longArrayOf(30_000L, 60_000L, 120_000L, 180_000L, 300_000L)
         private val CACHE_TTL_STEPS_MINUTES = intArrayOf(5, 10, 20, 30, 60, 120)

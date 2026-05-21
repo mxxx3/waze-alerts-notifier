@@ -2,11 +2,12 @@
 
 Android/Kotlin prototype for nearby road-alert notifications.
 
-Current version: `0.9.33` (`versionCode 43`).
+Current version: `0.9.34` (`versionCode 44`).
 
 ## What works
 
 - Kotlin Android app with dashboard and settings screens.
+- Android package/application ID is `com.mg.trafficalerts`.
 - User-configurable monitoring, notifications, radius, refresh time, live sources, demo source, and alert-type filters.
 - Experimental Waze Live Map alert source using radius-based bounding boxes.
 - OpenStreetMap/Overpass fixed-camera source for speed cameras and red-light cameras.
@@ -24,6 +25,10 @@ Current version: `0.9.33` (`versionCode 43`).
 - Provider-aware stale-alert cleanup: if a provider refresh succeeds and an old alert disappears, it expires quickly instead of lingering for the full movement-cache TTL.
 - Notification cleanup is reconciled against a persistent ledger so stale road-alert notifications are cancelled even after process restarts.
 - Android Auto `Mark as read` now dismisses the related alert(s) instead of being a no-op.
+- Diagnostics panel in Settings shows provider health, runtime state, and a test alert notification button.
+- When no alerts are active, the dashboard shows source status so failures are distinguishable from empty roads.
+- Alert priority now considers category, ahead/behind direction, distance, and provider; repeated heads-up alerts have a cooldown while live status updates remain frequent.
+- Launcher icon refreshed with the Traffic Alerts identity.
 - Phone dashboard keeps the screen awake while it is open.
 - Service watchdog keeps `AlertMonitorService` alive while monitoring is enabled: AlarmManager heartbeat (60 s when Android Auto is connected, 5 min otherwise), WorkManager periodic backup every 15 min, auto-start after device boot, and AlarmManager-based restart on uncaught exceptions or unexpected service destruction.
 - Stale alert notifications are swept on service start and on `onDestroy()`, so notifications no longer linger after a process kill or when monitoring is stopped.
@@ -70,7 +75,7 @@ Open the app, grant permissions, and enable background monitoring. On Android 11
 - Main screen: radius slider (crash-safe drag), refresh time slider, active alert list, per-alert `Navigate`, and per-alert `Mute` / `Unmute`.
 - **Navigation panel** (auto-shown when Google Maps is navigating): current geocoded address, route step text, nearest alert with distance, bearing direction chip, and "Ahead only" toggle.
 - **Log screen** ("Log" button in header): in-app log viewer with Clear / Copy / Export.
-- Settings screen: appearance mode, Waze Live Map source, OpenStreetMap cameras, optional TomTom API key, background monitoring, global notifications, demo alert source, alert type switches, and permission/system settings shortcuts.
+- Settings screen: appearance mode, Waze Live Map source, OpenStreetMap cameras, optional TomTom API key, diagnostics, background monitoring, global notifications, alert type switches, and permission/system settings shortcuts.
 
 ## Android Auto
 
@@ -93,5 +98,5 @@ During movement, remote providers are queried with a wider cache radius than the
 Release tags use `v<versionName>`. The current debug release asset should be named:
 
 ```text
-TrafficAlertsNotifier-debug-v0.9.33.apk
+TrafficAlertsNotifier-debug-v0.9.34.apk
 ```

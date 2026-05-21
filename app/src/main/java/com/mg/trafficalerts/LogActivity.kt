@@ -1,4 +1,4 @@
-package com.mg.wazealerts
+package com.mg.trafficalerts
 
 import android.app.Activity
 import android.content.ClipData
@@ -17,8 +17,8 @@ import android.widget.Toast
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
-import com.mg.wazealerts.settings.AppSettings
-import com.mg.wazealerts.ui.UiPalette
+import com.mg.trafficalerts.settings.AppSettings
+import com.mg.trafficalerts.ui.UiPalette
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale

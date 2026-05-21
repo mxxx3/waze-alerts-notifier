@@ -1,11 +1,12 @@
-package com.mg.wazealerts.source
+package com.mg.trafficalerts.source
 
 import android.content.Context
 import android.location.Geocoder
 import android.location.Location
-import com.mg.wazealerts.model.RoadAlert
-import com.mg.wazealerts.settings.AppSettings
-import com.mg.wazealerts.AppLogger
+import com.mg.trafficalerts.model.RoadAlert
+import com.mg.trafficalerts.settings.AppSettings
+import com.mg.trafficalerts.AppLogger
+import com.mg.trafficalerts.store.AlertStore
 import java.io.IOException
 import java.util.Locale
 
@@ -19,6 +20,7 @@ data class AlertFetchResult(
 
 class AlertRepository(context: Context) {
     private val appContext = context.applicationContext
+    private val alertStore = AlertStore(appContext)
     private val demoProvider = DemoAlertProvider()
     private val wazeProvider = WazeLiveMapAlertProvider(context.applicationContext)
     private val tomTomProvider = TomTomTrafficAlertProvider()
@@ -52,16 +54,20 @@ class AlertRepository(context: Context) {
 
         for (spec in specs) {
             if (!spec.enabled) {
+                alertStore.saveProviderHealth(spec.name, enabled = false, success = true, alertCount = 0, message = "disabled")
                 successful += spec.name
                 continue
             }
             runCatching { spec.fetch() }
                 .onSuccess {
+                    alertStore.saveProviderHealth(spec.name, enabled = true, success = true, alertCount = it.size)
                     successful += spec.name
                     alerts += it
                 }
                 .onFailure {
                     failed += spec.name
+                    val message = "${it.javaClass.simpleName}: ${it.message ?: "failed"}"
+                    alertStore.saveProviderHealth(spec.name, enabled = true, success = false, alertCount = 0, message = message)
                     AppLogger.w(TAG, "${spec.name} provider failed: ${it.javaClass.simpleName}: ${it.message}")
                 }
         }

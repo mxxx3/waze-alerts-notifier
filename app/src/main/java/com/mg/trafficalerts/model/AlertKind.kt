@@ -1,4 +1,4 @@
-package com.mg.wazealerts.model
+package com.mg.trafficalerts.model
 
 enum class AlertKind(val label: String) {
     POLICE("Police"),

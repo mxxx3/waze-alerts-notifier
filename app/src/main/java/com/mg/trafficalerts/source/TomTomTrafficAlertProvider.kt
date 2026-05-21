@@ -1,9 +1,9 @@
-package com.mg.wazealerts.source
+package com.mg.trafficalerts.source
 
 import android.location.Location
-import com.mg.wazealerts.model.AlertKind
-import com.mg.wazealerts.model.RoadAlert
-import com.mg.wazealerts.settings.AppSettings
+import com.mg.trafficalerts.model.AlertKind
+import com.mg.trafficalerts.model.RoadAlert
+import com.mg.trafficalerts.settings.AppSettings
 import org.json.JSONObject
 import java.io.IOException
 import java.net.HttpURLConnection

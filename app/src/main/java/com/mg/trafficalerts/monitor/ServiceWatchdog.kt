@@ -1,4 +1,4 @@
-package com.mg.wazealerts.monitor
+package com.mg.trafficalerts.monitor
 
 import android.app.AlarmManager
 import android.app.PendingIntent
@@ -13,8 +13,8 @@ import androidx.work.ExistingPeriodicWorkPolicy
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
-import com.mg.wazealerts.AppLogger
-import com.mg.wazealerts.settings.AppSettings
+import com.mg.trafficalerts.AppLogger
+import com.mg.trafficalerts.settings.AppSettings
 import java.util.concurrent.TimeUnit
 
 object ServiceWatchdog {

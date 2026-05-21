@@ -1,9 +1,9 @@
-package com.mg.wazealerts.settings
+package com.mg.trafficalerts.settings
 
 import android.content.Context
 import android.content.SharedPreferences
-import com.mg.wazealerts.model.AlertKind
-import com.mg.wazealerts.ui.ThemeMode
+import com.mg.trafficalerts.model.AlertKind
+import com.mg.trafficalerts.ui.ThemeMode
 
 class AppSettings(context: Context) {
     private val prefs: SharedPreferences =

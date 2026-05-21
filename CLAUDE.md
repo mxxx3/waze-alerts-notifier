@@ -4,8 +4,8 @@ This repository is an Android/Kotlin prototype for Traffic Alerts Notifier, a Wa
 
 ## Current Scope
 
-- Package: `com.mg.wazealerts`
-- Current app version: `0.9.33` / `versionCode 43`
+- Package: `com.mg.trafficalerts`
+- Current app version: `0.9.34` / `versionCode 44`
 - Build target: Android SDK 36
 - Minimum Android SDK: 26
 - Main artifact for release testing: debug APK from `app/build/outputs/apk/debug/app-debug.apk`
@@ -18,6 +18,7 @@ This repository is an Android/Kotlin prototype for Traffic Alerts Notifier, a Wa
 - The phone UI intentionally uses compact status chips, grouped control panels, and repeated alert cards rather than large plain settings rows.
 - Phone alert cards use a dedicated adjacent direction/distance card on the left; keep it aligned with the alert card height rather than moving arrow/distance back into the alert title row.
 - `AlertMonitorService` is a foreground location service and posts alert notifications.
+- Current package/application ID is `com.mg.trafficalerts`; keep broadcasts and notification actions on that package namespace.
 - Android Auto support is notification-only: do not register `MediaBrowserService`, `MediaSessionCompat`, `automotive_app_desc`, or `CarAppService` unless the user explicitly accepts a full Android Auto app surface.
 - `AlertMonitorService` posts car-compatible alert notifications with live direction arrow, relative direction, distance, and address; notification taps open the dashboard.
 - Android Auto road-alert notifications must not depend on Google Maps notification detection; Waze/Android Auto notification delivery should work whenever monitoring, location, and notification permission are active.
@@ -26,6 +27,8 @@ This repository is an Android/Kotlin prototype for Traffic Alerts Notifier, a Wa
 - `AlertMonitorService` distinguishes provider-successful empty refreshes from provider failures. Missing alerts from successful providers expire quickly; failed providers can retain cache briefly.
 - Android Auto notification reconciliation should stay capped to one urgent alert notification plus one summary notification, while retaining frequent live direction/distance updates.
 - Alert notification state has a persistent ledger in `AlertStore` so cleanup does not depend only on in-memory `notifiedIds`.
+- Provider health and runtime diagnostics are persisted in `AlertStore` and surfaced in Settings diagnostics plus the empty dashboard state.
+- Alert priority favors ahead-facing, high-impact, closer alerts; repeated heads-up alerts use a cooldown while live status updates remain frequent.
 - `AlertMonitorService` throttles visible-alert UI broadcasts while moving: alert identity changes still broadcast immediately, but distance-only updates are bucketed narrowly enough to keep phone distance labels smooth.
 - Release `0.9.7` shipped the Android Auto media-browser-only entry, per-alert direction arrows, and live distance recalculation between remote alert refreshes.
 - Release `0.9.8` shipped the modernized phone UI, configurable movement-cache settings, Android Auto title-level direction/distance display, and full removal of the fallback CarAppService.
@@ -38,6 +41,7 @@ This repository is an Android/Kotlin prototype for Traffic Alerts Notifier, a Wa
 - Release `0.9.19` reverts to JS fetch inside WebView but with bare `fetch(url)` — no explicit headers. `Referer` is a forbidden header that the browser rejects when set manually; prior versions were likely triggering that. Same-origin request; cookies included by default.
 - Release `0.9.18` switches `WazeWebViewFetcher` from injected JS `fetch()` to direct HTTP with cookies extracted via `CookieManager.getInstance().getCookie("https://www.waze.com")` after warmup; logs cookie availability.
 - Release `0.9.17` fixes `WazeWebViewFetcher` cookie timing: debounces `onPageFinished` (800ms after last redirect) and extends JS init wait to 5s so Waze session cookies are fully set before the georss fetch.
+- Release `0.9.34` renames the package/application ID to `com.mg.trafficalerts`, refreshes the launcher icon, adds Settings diagnostics with provider health/runtime state/test notification, adds dashboard source status when no alerts are active, ranks alerts by kind/direction/distance/provider, and adds a heads-up cooldown for repeated urgent alerts.
 - Release `0.9.33` caps Android Auto notification volume to one urgent alert plus one summary while preserving frequent live direction/distance updates. Adds provider-aware stale-alert expiration, single-flight remote refreshes to avoid stale repost races, persistent notification-ledger cleanup, and functional `Mark as read` dismissal for alert notifications.
 - Release `0.9.32` rebuilds the Settings → Permissions panel as per-permission rows with green/red status badges and a `Grant` / `Open settings` action per row. Covers `ACCESS_FINE_LOCATION`, `ACCESS_BACKGROUND_LOCATION` (Android 10+), `POST_NOTIFICATIONS` (Android 13+), Notification Listener access, `SCHEDULE_EXACT_ALARM` (Android 12+ via `AlarmManager.canScheduleExactAlarms()` and `Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM`), and battery-optimization whitelist (`PowerManager.isIgnoringBatteryOptimizations` / `ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS`). `SettingsActivity.onResume()` re-renders so status badges refresh after the user returns from system settings. Also removes the Demo alert source toggle from the Sources panel; the underlying `DemoAlertProvider` and `AppSettings.demoAlertsEnabled` flag remain (for tests/debug) but are no longer exposed in the UI.
 - Release `0.9.31` adds aggressive keep-alive infrastructure: `ServiceWatchdog` schedules an AlarmManager heartbeat that the running service resets on every location update (60 s interval when Android Auto is connected via `androidx.car.app:app` `CarConnection`, 5 min otherwise), so if the service dies the alarm fires `RestartReceiver` and brings the service back; `BootReceiver` restarts monitoring after device boot or app replacement; `WatchdogWorker` (WorkManager periodic 15 min) provides a backup revive path; an `UncaughtExceptionHandler` schedules an AlarmManager restart before the process exits; `onDestroy()` schedules a restart whenever monitoring is still enabled. Adds notification cleanup: `sweepStaleAlertNotifications()` clears orphaned alert notifications on service start, `cancelAlertNotifications()` enumerates `NotificationManager.activeNotifications` filtered by `CHANNEL_ALERTS` instead of relying on the in-memory `notifiedIds` set, and `onDestroy()` always cancels alert notifications so notifications never linger after process kill or when monitoring is stopped. Adds `RECEIVE_BOOT_COMPLETED`, `SCHEDULE_EXACT_ALARM`, and `WAKE_LOCK` permissions, and registers `BootReceiver` and `RestartReceiver` in the manifest.

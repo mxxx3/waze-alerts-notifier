@@ -1,4 +1,4 @@
-package com.mg.wazealerts.monitor
+package com.mg.trafficalerts.monitor
 
 import android.Manifest
 import android.app.Notification
@@ -22,12 +22,12 @@ import com.google.android.gms.location.LocationRequest
 import com.google.android.gms.location.LocationResult
 import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
-import com.mg.wazealerts.MainActivity
-import com.mg.wazealerts.R
-import com.mg.wazealerts.model.RoadAlert
-import com.mg.wazealerts.settings.AppSettings
-import com.mg.wazealerts.source.AlertRepository
-import com.mg.wazealerts.store.AlertStore
+import com.mg.trafficalerts.MainActivity
+import com.mg.trafficalerts.R
+import com.mg.trafficalerts.model.RoadAlert
+import com.mg.trafficalerts.settings.AppSettings
+import com.mg.trafficalerts.source.AlertRepository
+import com.mg.trafficalerts.store.AlertStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -43,8 +43,8 @@ import androidx.core.app.RemoteInput
 import androidx.car.app.connection.CarConnection
 import androidx.lifecycle.LiveData
 import androidx.lifecycle.Observer
-import com.mg.wazealerts.AppLogger
-import com.mg.wazealerts.source.AlertFetchResult
+import com.mg.trafficalerts.AppLogger
+import com.mg.trafficalerts.source.AlertFetchResult
 import java.util.Locale
 
 class AlertMonitorService : Service() {
@@ -110,9 +110,9 @@ class AlertMonitorService : Service() {
         installCrashHandler()
         observeCarConnection()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(navReceiver, IntentFilter("com.mg.wazealerts.MAPS_NAVIGATION_STATE"), Context.RECEIVER_NOT_EXPORTED)
+            registerReceiver(navReceiver, IntentFilter("com.mg.trafficalerts.MAPS_NAVIGATION_STATE"), Context.RECEIVER_NOT_EXPORTED)
         } else {
-            registerReceiver(navReceiver, IntentFilter("com.mg.wazealerts.MAPS_NAVIGATION_STATE"))
+            registerReceiver(navReceiver, IntentFilter("com.mg.trafficalerts.MAPS_NAVIGATION_STATE"))
         }
     }
 
@@ -320,7 +320,7 @@ class AlertMonitorService : Service() {
         lastUiBroadcastAtMillis = now
         lastVisibleIdsFingerprint = idsFingerprint
         lastVisibleDistanceFingerprint = distanceFingerprint
-        sendBroadcast(Intent("com.mg.wazealerts.ALERTS_UPDATED").setPackage(packageName))
+        sendBroadcast(Intent("com.mg.trafficalerts.ALERTS_UPDATED").setPackage(packageName))
     }
 
     private fun mergeCachedAlerts(
@@ -372,7 +372,7 @@ class AlertMonitorService : Service() {
             .map { it.withDistanceFrom(location) }
             .filter { it.distanceMeters <= settings.radiusMeters }
             .filterNot { it.id in passed }
-            .sortedBy { it.distanceMeters }
+            .sortedWith(compareByDescending<RoadAlert> { alertPriorityScore(it, location) }.thenBy { it.distanceMeters })
             .take(settings.maxVisibleAlerts)
     }
 
@@ -425,6 +425,7 @@ class AlertMonitorService : Service() {
                     list.filter { alertIsAheadOf(it, location, heading) }
                 else list
             }
+            .sortedWith(compareByDescending<RoadAlert> { alertPriorityScore(it, location) }.thenBy { it.distanceMeters })
             .take(MAX_VISIBLE_CAR_ALERTS)
 
         if (current.isEmpty()) {
@@ -444,9 +445,13 @@ class AlertMonitorService : Service() {
         val urgentKey = "alert:${urgentAlert.id}"
         val isNewUrgent = notifiedIds.add(urgentAlert.id)
         if (isNewUrgent || lastNotifiedFingerprint[urgentKey] != urgentFp) {
-            showAlert(urgentAlert, location)
+            val inCooldown = isNewUrgent && headsUpInCooldown(urgentAlert.id)
+            showAlert(urgentAlert, location, silent = inCooldown)
+            if (isNewUrgent && !inCooldown) alertStore.recordHeadsUp(urgentAlert.id)
             lastNotifiedFingerprint[urgentKey] = urgentFp
-            if (isNewUrgent) AppLogger.i(TAG, "Notifying: ${urgentAlert.title} at ${urgentAlert.distanceMeters.toInt()}m")
+            if (isNewUrgent) {
+                AppLogger.i(TAG, "Notifying: ${urgentAlert.title} at ${urgentAlert.distanceMeters.toInt()}m${if (inCooldown) " (cooldown silent)" else ""}")
+            }
         }
 
         if (current.size > 1) {
@@ -508,7 +513,7 @@ class AlertMonitorService : Service() {
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .build()
 
-    private fun showAlert(alert: RoadAlert, location: Location) {
+    private fun showAlert(alert: RoadAlert, location: Location, silent: Boolean = false) {
         val directionLine = directionDistanceLine(alert, location)
         val senderName = "${alert.kind.label}: $directionLine"
         val sender = Person.Builder().setName(senderName).setBot(true).build()
@@ -546,7 +551,8 @@ class AlertMonitorService : Service() {
             .setAutoCancel(false)
             .setOnlyAlertOnce(true)
             .setTimeoutAfter(ALERT_NOTIFICATION_TIMEOUT_MILLIS)
-            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setSilent(silent)
+            .setPriority(if (silent) NotificationCompat.PRIORITY_DEFAULT else NotificationCompat.PRIORITY_HIGH)
             .setCategory(NotificationCompat.CATEGORY_MESSAGE)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
         getSystemService(NotificationManager::class.java).notify(alertNotificationId(alert.id), builder.build())
@@ -742,6 +748,32 @@ class AlertMonitorService : Service() {
 
     private fun alertNotificationId(alertId: String): Int = alertId.hashCode()
 
+    private fun headsUpInCooldown(alertId: String): Boolean {
+        val last = alertStore.lastHeadsUpAt(alertId) ?: return false
+        return System.currentTimeMillis() - last < HEADS_UP_COOLDOWN_MILLIS
+    }
+
+    private fun alertPriorityScore(alert: RoadAlert, location: Location): Int {
+        val heading = if (location.hasBearing()) location.bearing else settings.lastBearingDegrees
+        val aheadScore = if (heading >= 0f && alertIsAheadOf(alert, location, heading)) 80 else 0
+        val kindScore = when (alert.kind) {
+            com.mg.trafficalerts.model.AlertKind.POLICE -> 90
+            com.mg.trafficalerts.model.AlertKind.CAMERA -> 80
+            com.mg.trafficalerts.model.AlertKind.ACCIDENT -> 75
+            com.mg.trafficalerts.model.AlertKind.HAZARD -> 65
+            com.mg.trafficalerts.model.AlertKind.ROADWORK -> 45
+            com.mg.trafficalerts.model.AlertKind.TRAFFIC -> 25
+        }
+        val distanceScore = ((settings.radiusMeters - alert.distanceMeters).coerceAtLeast(0f) / 100f).toInt()
+        val providerScore = when (providerKey(alert)) {
+            "waze" -> 12
+            "tomtom" -> 10
+            "osm-camera" -> 6
+            else -> 0
+        }
+        return aheadScore + kindScore + distanceScore + providerScore
+    }
+
     private fun notifFingerprint(alert: RoadAlert, location: Location): String {
         val target = Location("").apply { latitude = alert.latitude; longitude = alert.longitude }
         val distBucket = (location.distanceTo(target) / CAR_NOTIF_DISTANCE_BUCKET_METERS).toInt()
@@ -826,8 +858,9 @@ class AlertMonitorService : Service() {
         private const val STALE_MISS_LIMIT = 2
         private const val STALE_ALERT_GRACE_MILLIS = 90_000L
         private const val ALERT_NOTIFICATION_TIMEOUT_MILLIS = 10 * 60_000L
-        private const val ACTION_REPLY = "com.mg.wazealerts.ACTION_REPLY"
-        private const val ACTION_MARK_READ = "com.mg.wazealerts.ACTION_MARK_READ"
+        private const val HEADS_UP_COOLDOWN_MILLIS = 10 * 60_000L
+        private const val ACTION_REPLY = "com.mg.trafficalerts.ACTION_REPLY"
+        private const val ACTION_MARK_READ = "com.mg.trafficalerts.ACTION_MARK_READ"
         private const val EXTRA_ALERT_ID = "extra_alert_id"
         private const val EXTRA_ALERT_IDS = "extra_alert_ids"
         private const val KEY_REPLY = "key_reply"

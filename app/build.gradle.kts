@@ -4,15 +4,15 @@ plugins {
 }
 
 android {
-    namespace = "com.mg.wazealerts"
+    namespace = "com.mg.trafficalerts"
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "com.mg.wazealerts"
+        applicationId = "com.mg.trafficalerts"
         minSdk = 26
         targetSdk = 36
-        versionCode = 43
-        versionName = "0.9.33"
+        versionCode = 44
+        versionName = "0.9.34"
     }
 
     compileOptions {

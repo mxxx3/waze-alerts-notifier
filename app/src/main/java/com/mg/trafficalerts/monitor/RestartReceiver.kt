@@ -1,10 +1,10 @@
-package com.mg.wazealerts.monitor
+package com.mg.trafficalerts.monitor
 
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import com.mg.wazealerts.AppLogger
-import com.mg.wazealerts.settings.AppSettings
+import com.mg.trafficalerts.AppLogger
+import com.mg.trafficalerts.settings.AppSettings
 
 class RestartReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent?) {

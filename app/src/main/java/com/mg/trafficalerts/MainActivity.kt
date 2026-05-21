@@ -1,4 +1,4 @@
-package com.mg.wazealerts
+package com.mg.trafficalerts
 
 import android.Manifest
 import android.app.Activity
@@ -20,11 +20,11 @@ import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import com.google.android.gms.location.LocationServices
-import com.mg.wazealerts.model.RoadAlert
-import com.mg.wazealerts.settings.AppSettings
-import com.mg.wazealerts.source.AlertRepository
-import com.mg.wazealerts.store.AlertStore
-import com.mg.wazealerts.ui.UiPalette
+import com.mg.trafficalerts.model.RoadAlert
+import com.mg.trafficalerts.settings.AppSettings
+import com.mg.trafficalerts.source.AlertRepository
+import com.mg.trafficalerts.store.AlertStore
+import com.mg.trafficalerts.ui.UiPalette
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -57,7 +57,7 @@ class MainActivity : Activity() {
 
     private val alertUpdateReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
-            if (intent?.action == "com.mg.wazealerts.ALERTS_UPDATED") {
+            if (intent?.action == "com.mg.trafficalerts.ALERTS_UPDATED") {
                 activeAlerts = alertStore.activeAlerts()
                 statusText = "Showing ${activeAlerts.size} alert(s) within ${formatRadius(settings.radiusMeters)}."
                 render()
@@ -80,8 +80,8 @@ class MainActivity : Activity() {
         ensureNotificationPermission()
         showChangelogIfUpdated()
         if (settings.monitoringEnabled) {
-            com.mg.wazealerts.monitor.ServiceWatchdog.startMonitoring(this)
-            com.mg.wazealerts.monitor.ServiceWatchdog.scheduleWatchdog(this)
+            com.mg.trafficalerts.monitor.ServiceWatchdog.startMonitoring(this)
+            com.mg.trafficalerts.monitor.ServiceWatchdog.scheduleWatchdog(this)
         }
     }
 
@@ -91,7 +91,7 @@ class MainActivity : Activity() {
             settings.lastVersionCode = currentVersion
             AlertDialog.Builder(this)
                 .setTitle("What's new in v${BuildConfig.VERSION_NAME}")
-                .setMessage("• Settings → Permissions: per-permission status badges and one-tap grant/open-settings for fine/background location, notifications, notification access, exact alarms, and battery-optimization whitelist\n• Demo alert source removed from Sources panel (real providers only)\n• 0.9.31: notification dismissal cleanup + Android Auto keep-alive (heartbeat watchdog, boot auto-start, crash restart)")
+                .setMessage("• Package changed to com.mg.trafficalerts\n• Diagnostics panel shows provider health and runtime notification state\n• Test alert notification button added for Android Auto validation\n• Alert priority now considers kind, direction, distance, and provider\n• Repeated heads-up alerts have a cooldown while live status updates stay frequent")
                 .setPositiveButton("OK") { d, _ -> d.dismiss() }
                 .show()
         }
@@ -100,9 +100,9 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            registerReceiver(alertUpdateReceiver, IntentFilter("com.mg.wazealerts.ALERTS_UPDATED"), Context.RECEIVER_NOT_EXPORTED)
+            registerReceiver(alertUpdateReceiver, IntentFilter("com.mg.trafficalerts.ALERTS_UPDATED"), Context.RECEIVER_NOT_EXPORTED)
         } else {
-            registerReceiver(alertUpdateReceiver, IntentFilter("com.mg.wazealerts.ALERTS_UPDATED"))
+            registerReceiver(alertUpdateReceiver, IntentFilter("com.mg.trafficalerts.ALERTS_UPDATED"))
         }
         if (::settings.isInitialized && ::root.isInitialized) {
             render()
@@ -566,11 +566,26 @@ class MainActivity : Activity() {
         }
 
     private fun emptyState(): TextView =
-        text("No active alerts loaded.", 14f, palette.secondary).apply {
+        text("No active alerts loaded.\n${sourceStatusLine()}", 14f, palette.secondary).apply {
             gravity = Gravity.CENTER
             setPadding(0, 26.dp, 0, 26.dp)
             background = rounded(palette.panel, palette.border)
         }
+
+    private fun sourceStatusLine(): String {
+        val health = alertStore.providerHealth()
+        if (health.isEmpty()) return "No provider refresh has completed yet."
+        return listOf("waze" to "Waze", "osm-camera" to "OSM", "tomtom" to "TomTom")
+            .joinToString(" · ") { (key, label) ->
+                val item = health[key]
+                when {
+                    item == null -> "$label pending"
+                    !item.enabled -> "$label off"
+                    item.success -> "$label ok ${item.alertCount}"
+                    else -> "$label failed"
+                }
+            }
+    }
 
     private fun chip(label: String, fill: Int = palette.accentSoft, textColor: Int = palette.title): TextView =
         text(label, 12f, palette.title, bold = true).apply {

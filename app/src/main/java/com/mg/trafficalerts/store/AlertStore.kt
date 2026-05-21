@@ -1,13 +1,22 @@
-package com.mg.wazealerts.store
+package com.mg.trafficalerts.store
 
 import android.content.Context
-import com.mg.wazealerts.model.AlertKind
-import com.mg.wazealerts.model.RoadAlert
+import com.mg.trafficalerts.model.AlertKind
+import com.mg.trafficalerts.model.RoadAlert
 import org.json.JSONArray
 import org.json.JSONObject
 
 class AlertStore(context: Context) {
     private val prefs = context.getSharedPreferences("alert_store", Context.MODE_PRIVATE)
+
+    data class ProviderHealth(
+        val name: String,
+        val enabled: Boolean,
+        val success: Boolean,
+        val alertCount: Int,
+        val updatedAtMillis: Long,
+        val message: String
+    )
 
     fun activeAlerts(): List<RoadAlert> {
         val raw = prefs.getString(KEY_ACTIVE_ALERTS, null) ?: return emptyList()
@@ -108,6 +117,40 @@ class AlertStore(context: Context) {
         prefs.edit().remove(KEY_ACTIVE_NOTIFICATION_IDS).apply()
     }
 
+    fun saveProviderHealth(
+        name: String,
+        enabled: Boolean,
+        success: Boolean,
+        alertCount: Int,
+        message: String = "",
+        updatedAtMillis: Long = System.currentTimeMillis()
+    ) {
+        val health = providerHealth().toMutableMap()
+        health[name] = ProviderHealth(name, enabled, success, alertCount, updatedAtMillis, message)
+        prefs.edit().putString(KEY_PROVIDER_HEALTH, health.values.toJsonArray().toString()).apply()
+    }
+
+    fun providerHealth(): Map<String, ProviderHealth> {
+        val raw = prefs.getString(KEY_PROVIDER_HEALTH, null) ?: return emptyMap()
+        return runCatching {
+            val array = JSONArray(raw)
+            buildMap {
+                for (index in 0 until array.length()) {
+                    val item = array.getJSONObject(index).toProviderHealth()
+                    put(item.name, item)
+                }
+            }
+        }.getOrDefault(emptyMap())
+    }
+
+    fun recordHeadsUp(alertId: String, shownAtMillis: Long = System.currentTimeMillis()) {
+        val shown = headsUpShownAt().toMutableMap()
+        shown[alertId] = shownAtMillis
+        prefs.edit().putString(KEY_HEADS_UP_SHOWN_AT, shown.toLongJsonObject().toString()).apply()
+    }
+
+    fun lastHeadsUpAt(alertId: String): Long? = headsUpShownAt()[alertId]
+
     fun isMuted(alertId: String): Boolean = mutedIds().contains(alertId)
 
     fun setMuted(alertId: String, muted: Boolean) {
@@ -130,6 +173,15 @@ class AlertStore(context: Context) {
     fun clearPassed() {
         prefs.edit().remove(KEY_PASSED_ALERTS).apply()
     }
+
+    fun diagnosticsSummary(): String =
+        buildString {
+            append("active=${activeAlerts().size}")
+            append(", cached=${cachedAlerts(Long.MAX_VALUE).size}")
+            append(", muted=${mutedIds().size}")
+            append(", passed=${passedAlertIds().size}")
+            append(", notifications=${activeNotificationIds().size}")
+        }
 
     private fun RoadAlert.toJson(): JSONObject =
         JSONObject()
@@ -156,6 +208,28 @@ class AlertStore(context: Context) {
             reportedAtMillis = getLong("reportedAtMillis")
         )
 
+    private fun ProviderHealth.toJson(): JSONObject =
+        JSONObject()
+            .put("name", name)
+            .put("enabled", enabled)
+            .put("success", success)
+            .put("alertCount", alertCount)
+            .put("updatedAtMillis", updatedAtMillis)
+            .put("message", message)
+
+    private fun JSONObject.toProviderHealth(): ProviderHealth =
+        ProviderHealth(
+            name = getString("name"),
+            enabled = optBoolean("enabled", true),
+            success = optBoolean("success", false),
+            alertCount = optInt("alertCount", 0),
+            updatedAtMillis = optLong("updatedAtMillis", 0L),
+            message = optString("message", "")
+        )
+
+    private fun Collection<ProviderHealth>.toJsonArray(): JSONArray =
+        JSONArray().also { array -> forEach { array.put(it.toJson()) } }
+
     private fun alertSeenAt(): Map<String, Long> =
         prefs.getString(KEY_ALERT_LAST_SEEN_AT, null)
             ?.toLongMap()
@@ -164,6 +238,11 @@ class AlertStore(context: Context) {
     private fun alertMissingCounts(): Map<String, Int> =
         prefs.getString(KEY_ALERT_MISSING_COUNTS, null)
             ?.toIntMap()
+            ?: emptyMap()
+
+    private fun headsUpShownAt(): Map<String, Long> =
+        prefs.getString(KEY_HEADS_UP_SHOWN_AT, null)
+            ?.toLongMap()
             ?: emptyMap()
 
     private fun Map<String, Long>.toLongJsonObject(): JSONObject =
@@ -197,5 +276,7 @@ class AlertStore(context: Context) {
         private const val KEY_ALERT_LAST_SEEN_AT = "alert_last_seen_at"
         private const val KEY_ALERT_MISSING_COUNTS = "alert_missing_counts"
         private const val KEY_ACTIVE_NOTIFICATION_IDS = "active_notification_ids"
+        private const val KEY_PROVIDER_HEALTH = "provider_health"
+        private const val KEY_HEADS_UP_SHOWN_AT = "heads_up_shown_at"
     }
 }

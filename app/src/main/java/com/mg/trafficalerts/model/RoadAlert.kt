@@ -1,4 +1,4 @@
-package com.mg.wazealerts.model
+package com.mg.trafficalerts.model
 
 data class RoadAlert(
     val id: String,
