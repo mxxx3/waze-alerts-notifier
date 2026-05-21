@@ -33,6 +33,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.IntentFilter
@@ -43,6 +44,7 @@ import androidx.car.app.connection.CarConnection
 import androidx.lifecycle.LiveData
 import androidx.lifecycle.Observer
 import com.mg.wazealerts.AppLogger
+import com.mg.wazealerts.source.AlertFetchResult
 import java.util.Locale
 
 class AlertMonitorService : Service() {
@@ -56,6 +58,7 @@ class AlertMonitorService : Service() {
     private var isRunning = false
     private val minDistanceSeen = HashMap<String, Float>()
     private val lastNotifiedFingerprint = HashMap<String, String>()
+    private val refreshMutex = Mutex()
     private var lastGeocodedLocation: Location? = null
     private var lastAlertRefreshAtMillis = 0L
     private var lastUiBroadcastAtMillis = 0L
@@ -234,32 +237,44 @@ class AlertMonitorService : Service() {
             ))
 
             val liveAlerts = updateStoredAlertDistances(location)
+            syncAlertNotifications(liveAlerts, location)
+            geocodeCurrentPosition(location)
             if (!shouldRefreshAlerts()) {
-                syncAlertNotifications(liveAlerts, location)
-                geocodeCurrentPosition(location)
                 return@launch
             }
+            if (!refreshMutex.tryLock()) return@launch
 
-            val cacheRadius = cacheRadiusMeters()
-            val fetched = repository.nearby(location, cacheRadius)
-                .map { it.withDistanceFrom(location) }
-                .sortedBy { it.distanceMeters }
-            AppLogger.i(TAG, "Fetched ${fetched.size} cache alerts (radius=${cacheRadius}m, visibleRadius=${settings.radiusMeters}m)")
+            try {
+                if (!shouldRefreshAlerts()) return@launch
 
-            lastAlertRefreshAtMillis = System.currentTimeMillis()
-            val cached = mergeCachedAlerts(fetched, alertStore.cachedAlerts(alertCacheTtlMillis()), location)
-            val visible = visibleAlerts(cached, location)
-            val passCheckAlerts = cached.filterNot { alertStore.passedAlertIds().contains(it.id) }.take(50)
-            updatePassedAlerts(passCheckAlerts, location)
+                val cacheRadius = cacheRadiusMeters()
+                lastAlertRefreshAtMillis = System.currentTimeMillis()
+                val fetchResult = repository.nearbyResult(location, cacheRadius)
+                val fetched = fetchResult.alerts
+                    .map { it.withDistanceFrom(location) }
+                    .sortedBy { it.distanceMeters }
+                AppLogger.i(
+                    TAG,
+                    "Fetched ${fetched.size} cache alerts (radius=${cacheRadius}m, visibleRadius=${settings.radiusMeters}m, ok=${fetchResult.successfulProviders}, failed=${fetchResult.failedProviders})"
+                )
 
-            if (cached.isNotEmpty()) {
-                alertStore.saveCachedAlerts(cached, updateFetchedAt = fetched.isNotEmpty())
+                val cached = mergeCachedAlerts(fetchResult.copy(alerts = fetched), alertStore.cachedAlerts(alertCacheTtlMillis()), location)
+                val visible = visibleAlerts(cached, location)
+                val passCheckAlerts = cached.filterNot { alertStore.passedAlertIds().contains(it.id) }.take(50)
+                updatePassedAlerts(passCheckAlerts, location)
+
+                if (cached.isNotEmpty()) {
+                    alertStore.saveCachedAlerts(cached, updateFetchedAt = fetchResult.successfulProviders.isNotEmpty())
+                } else {
+                    alertStore.clearCachedAlerts()
+                }
+                alertStore.saveActiveAlerts(visible)
+                broadcastVisibleAlerts(visible, force = true)
+
+                syncAlertNotifications(visible, location)
+            } finally {
+                refreshMutex.unlock()
             }
-            alertStore.saveActiveAlerts(visible)
-            broadcastVisibleAlerts(visible, force = true)
-            geocodeCurrentPosition(location)
-
-            syncAlertNotifications(visible, location)
         }
     }
 
@@ -309,21 +324,46 @@ class AlertMonitorService : Service() {
     }
 
     private fun mergeCachedAlerts(
-        fetched: List<RoadAlert>,
+        fetchResult: AlertFetchResult,
         existing: List<RoadAlert>,
         location: Location
     ): List<RoadAlert> {
+        val fetched = fetchResult.alerts
+        val fetchedIds = fetched.mapTo(mutableSetOf()) { it.id }
+        alertStore.markAlertsSeen(fetchedIds)
         val byId = linkedMapOf<String, RoadAlert>()
         existing.forEach { alert ->
             val updated = alert.withDistanceFrom(location)
-            if (updated.distanceMeters <= cacheRadiusMeters()) {
+            if (updated.distanceMeters <= cacheRadiusMeters() && shouldRetainCachedAlert(updated, fetchResult, fetchedIds)) {
                 byId[updated.id] = updated
             }
         }
         fetched.forEach { byId[it.id] = it.withDistanceFrom(location) }
-        return byId.values
+        val retained = byId.values
             .sortedBy { it.distanceMeters }
             .take(MAX_CACHED_ALERTS)
+        alertStore.pruneAlertLifecycle(retained.mapTo(mutableSetOf()) { it.id })
+        return retained
+    }
+
+    private fun shouldRetainCachedAlert(
+        alert: RoadAlert,
+        fetchResult: AlertFetchResult,
+        fetchedIds: Set<String>
+    ): Boolean {
+        if (alert.id in fetchedIds) return true
+
+        val provider = providerKey(alert)
+        if (provider !in fetchResult.successfulProviders) return true
+
+        val missCount = alertStore.recordAlertMissing(alert.id)
+        val lastSeenAt = alertStore.alertLastSeenAt(alert.id) ?: System.currentTimeMillis()
+        val ageSinceSeen = System.currentTimeMillis() - lastSeenAt
+        val retain = missCount < STALE_MISS_LIMIT && ageSinceSeen <= STALE_ALERT_GRACE_MILLIS
+        if (!retain) {
+            AppLogger.i(TAG, "Expiring stale ${provider} alert: ${alert.title} (misses=$missCount, unseen=${ageSinceSeen / 1000}s)")
+        }
+        return retain
     }
 
     private fun visibleAlerts(alerts: List<RoadAlert>, location: Location): List<RoadAlert> {
@@ -385,26 +425,39 @@ class AlertMonitorService : Service() {
                     list.filter { alertIsAheadOf(it, location, heading) }
                 else list
             }
-            .take(MAX_VISIBLE_CAR_NOTIFICATIONS)
-        val currentIds = current.map { it.id }.toSet()
-        notifiedIds.filterNot { it in currentIds }.toList().forEach { id ->
-            cancelAlertNotification(id)
-            notifiedIds.remove(id)
+            .take(MAX_VISIBLE_CAR_ALERTS)
+
+        if (current.isEmpty()) {
+            cancelAlertNotifications()
+            return
         }
 
-        current.forEach { alert ->
-            val isNew = notifiedIds.add(alert.id)
-            val fp = notifFingerprint(alert, location)
-            if (isNew || lastNotifiedFingerprint[alert.id] != fp) {
-                showAlert(alert, location)
-                lastNotifiedFingerprint[alert.id] = fp
-                if (isNew) AppLogger.i(TAG, "Notifying: ${alert.title} at ${alert.distanceMeters.toInt()}m")
-            }
+        val urgentAlert = current.first()
+        val targetNotificationIds = buildSet {
+            add(alertNotificationId(urgentAlert.id))
+            if (current.size > 1) add(SUMMARY_NOTIFICATION_ID)
         }
-        while (notifiedIds.size > MAX_NOTIFIED_IDS) {
-            val id = notifiedIds.first()
-            cancelAlertNotification(id)
-            notifiedIds.remove(id)
+        cancelNotificationsExcept(targetNotificationIds)
+        alertStore.saveActiveNotificationIds(targetNotificationIds)
+
+        val urgentFp = notifFingerprint(urgentAlert, location)
+        val urgentKey = "alert:${urgentAlert.id}"
+        val isNewUrgent = notifiedIds.add(urgentAlert.id)
+        if (isNewUrgent || lastNotifiedFingerprint[urgentKey] != urgentFp) {
+            showAlert(urgentAlert, location)
+            lastNotifiedFingerprint[urgentKey] = urgentFp
+            if (isNewUrgent) AppLogger.i(TAG, "Notifying: ${urgentAlert.title} at ${urgentAlert.distanceMeters.toInt()}m")
+        }
+
+        if (current.size > 1) {
+            val summaryFp = summaryFingerprint(current, location)
+            if (lastNotifiedFingerprint[SUMMARY_NOTIFICATION_KEY] != summaryFp) {
+                showAlertSummary(current, location)
+                lastNotifiedFingerprint[SUMMARY_NOTIFICATION_KEY] = summaryFp
+            }
+        } else {
+            cancelNotificationId(SUMMARY_NOTIFICATION_ID)
+            lastNotifiedFingerprint.remove(SUMMARY_NOTIFICATION_KEY)
         }
     }
 
@@ -465,22 +518,17 @@ class AlertMonitorService : Service() {
             .addMessage(alert.addressLine(), System.currentTimeMillis(), sender)
         val replyFlags = PendingIntent.FLAG_UPDATE_CURRENT or
             if (Build.VERSION.SDK_INT >= 31) PendingIntent.FLAG_MUTABLE else 0
-        val replyIntent = PendingIntent.getBroadcast(
-            this,
-            alert.id.hashCode(),
-            Intent(this, NotificationActionReceiver::class.java).setAction(ACTION_REPLY),
-            replyFlags
-        )
+        val replyIntent = alertActionIntent(alert.id, ACTION_REPLY, alertNotificationId(alert.id), replyFlags)
         val replyAction = NotificationCompat.Action.Builder(R.mipmap.ic_launcher, "Reply", replyIntent)
             .addRemoteInput(RemoteInput.Builder(KEY_REPLY).setLabel("Reply").build())
             .setAllowGeneratedReplies(true)
             .setSemanticAction(NotificationCompat.Action.SEMANTIC_ACTION_REPLY)
             .setShowsUserInterface(false)
             .build()
-        val markReadIntent = PendingIntent.getBroadcast(
-            this,
-            alert.id.hashCode() + 1,
-            Intent(this, NotificationActionReceiver::class.java).setAction(ACTION_MARK_READ),
+        val markReadIntent = alertActionIntent(
+            alert.id,
+            ACTION_MARK_READ,
+            alertNotificationId(alert.id) + ACTION_REQUEST_OFFSET,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
         val markReadAction = NotificationCompat.Action.Builder(R.mipmap.ic_launcher, "Mark as read", markReadIntent)
@@ -497,17 +545,72 @@ class AlertMonitorService : Service() {
             .addAction(markReadAction)
             .setAutoCancel(false)
             .setOnlyAlertOnce(true)
+            .setTimeoutAfter(ALERT_NOTIFICATION_TIMEOUT_MILLIS)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setCategory(NotificationCompat.CATEGORY_MESSAGE)
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
-        getSystemService(NotificationManager::class.java).notify(alert.id.hashCode(), builder.build())
+        getSystemService(NotificationManager::class.java).notify(alertNotificationId(alert.id), builder.build())
+    }
+
+    private fun showAlertSummary(alerts: List<RoadAlert>, location: Location) {
+        val senderName = "${alerts.size} road alerts ahead"
+        val sender = Person.Builder().setName(senderName).setBot(true).build()
+        val style = NotificationCompat.MessagingStyle(sender)
+            .setConversationTitle(senderName)
+            .setGroupConversation(false)
+        alerts.take(SUMMARY_ALERT_LINES).forEach { alert ->
+            style.addMessage(
+                "${alert.kind.label}: ${directionDistanceLine(alert, location)} · ${alert.addressLine()}",
+                System.currentTimeMillis(),
+                sender
+            )
+        }
+        val alertIds = alerts.map { it.id }.toTypedArray()
+        val replyIntent = summaryActionIntent(ACTION_REPLY, SUMMARY_NOTIFICATION_ID, alertIds, PendingIntent.FLAG_UPDATE_CURRENT or
+            if (Build.VERSION.SDK_INT >= 31) PendingIntent.FLAG_MUTABLE else 0)
+        val replyAction = NotificationCompat.Action.Builder(R.mipmap.ic_launcher, "Reply", replyIntent)
+            .addRemoteInput(RemoteInput.Builder(KEY_REPLY).setLabel("Reply").build())
+            .setAllowGeneratedReplies(true)
+            .setSemanticAction(NotificationCompat.Action.SEMANTIC_ACTION_REPLY)
+            .setShowsUserInterface(false)
+            .build()
+        val markReadIntent = summaryActionIntent(
+            ACTION_MARK_READ,
+            SUMMARY_NOTIFICATION_ID + ACTION_REQUEST_OFFSET,
+            alertIds,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val markReadAction = NotificationCompat.Action.Builder(R.mipmap.ic_launcher, "Mark as read", markReadIntent)
+            .setSemanticAction(NotificationCompat.Action.SEMANTIC_ACTION_MARK_AS_READ)
+            .setShowsUserInterface(false)
+            .build()
+        val text = alerts.take(SUMMARY_ALERT_LINES)
+            .joinToString(" · ") { "${it.kind.label} ${formatDistance(it.distanceMeters)}" }
+        val builder = NotificationCompat.Builder(this, CHANNEL_ALERTS)
+            .setSmallIcon(R.mipmap.ic_launcher)
+            .setContentTitle(senderName)
+            .setContentText(text)
+            .setStyle(style)
+            .setContentIntent(contentIntent())
+            .addAction(replyAction)
+            .addAction(markReadAction)
+            .setAutoCancel(false)
+            .setOnlyAlertOnce(true)
+            .setSilent(true)
+            .setTimeoutAfter(ALERT_NOTIFICATION_TIMEOUT_MILLIS)
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .setCategory(NotificationCompat.CATEGORY_MESSAGE)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+        getSystemService(NotificationManager::class.java).notify(SUMMARY_NOTIFICATION_ID, builder.build())
     }
 
     private fun cancelAlertNotifications() {
         val nm = getSystemService(NotificationManager::class.java)
-        notifiedIds.toList().forEach { nm.cancel(it.hashCode()) }
+        notifiedIds.toList().forEach { nm.cancel(alertNotificationId(it)) }
         notifiedIds.clear()
         lastNotifiedFingerprint.clear()
+        alertStore.activeNotificationIds().forEach { nm.cancel(it) }
+        alertStore.clearActiveNotificationIds()
         if (Build.VERSION.SDK_INT >= 23) {
             runCatching {
                 nm.activeNotifications
@@ -518,8 +621,36 @@ class AlertMonitorService : Service() {
     }
 
     private fun cancelAlertNotification(alertId: String) {
-        getSystemService(NotificationManager::class.java).cancel(alertId.hashCode())
-        lastNotifiedFingerprint.remove(alertId)
+        cancelNotificationId(alertNotificationId(alertId))
+        notifiedIds.remove(alertId)
+        lastNotifiedFingerprint.remove("alert:$alertId")
+    }
+
+    private fun cancelNotificationId(notificationId: Int) {
+        getSystemService(NotificationManager::class.java).cancel(notificationId)
+    }
+
+    private fun cancelNotificationsExcept(targetIds: Set<Int>) {
+        val nm = getSystemService(NotificationManager::class.java)
+        alertStore.activeNotificationIds()
+            .filterNot { it in targetIds }
+            .forEach { nm.cancel(it) }
+        if (Build.VERSION.SDK_INT >= 23) {
+            runCatching {
+                nm.activeNotifications
+                    .filter { it.notification.channelId == CHANNEL_ALERTS && it.id !in targetIds }
+                    .forEach { nm.cancel(it.id) }
+            }
+        }
+        notifiedIds.toList()
+            .filterNot { alertNotificationId(it) in targetIds }
+            .forEach { notifiedIds.remove(it) }
+        lastNotifiedFingerprint.keys
+            .filter { key ->
+                key.startsWith("alert:") && alertNotificationId(key.removePrefix("alert:")) !in targetIds
+            }
+            .toList()
+            .forEach { lastNotifiedFingerprint.remove(it) }
     }
 
     private fun sweepStaleAlertNotifications() {
@@ -553,6 +684,26 @@ class AlertMonitorService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
+    private fun alertActionIntent(alertId: String, action: String, requestCode: Int, flags: Int): PendingIntent =
+        PendingIntent.getBroadcast(
+            this,
+            requestCode,
+            Intent(this, NotificationActionReceiver::class.java)
+                .setAction(action)
+                .putExtra(EXTRA_ALERT_ID, alertId),
+            flags
+        )
+
+    private fun summaryActionIntent(action: String, requestCode: Int, alertIds: Array<String>, flags: Int): PendingIntent =
+        PendingIntent.getBroadcast(
+            this,
+            requestCode,
+            Intent(this, NotificationActionReceiver::class.java)
+                .setAction(action)
+                .putExtra(EXTRA_ALERT_IDS, alertIds),
+            flags
+        )
+
     private fun wazeIntent(alert: RoadAlert): PendingIntent {
         val uri = Uri.parse(
             "https://waze.com/ul?ll=${alert.latitude},${alert.longitude}&navigate=yes&z=10&utm_source=$packageName"
@@ -578,6 +729,18 @@ class AlertMonitorService : Service() {
 
     private fun RoadAlert.addressLine(): String =
         address?.takeIf { it.isNotBlank() } ?: "%.5f, %.5f".format(Locale.US, latitude, longitude)
+
+    private fun summaryFingerprint(alerts: List<RoadAlert>, location: Location): String =
+        alerts.joinToString("|") { "${it.id}:${notifFingerprint(it, location)}" }
+
+    private fun providerKey(alert: RoadAlert): String = when {
+        alert.id.startsWith("waze:") -> "waze"
+        alert.id.startsWith("tomtom:") -> "tomtom"
+        alert.id.startsWith("osm-camera:") -> "osm-camera"
+        else -> "demo"
+    }
+
+    private fun alertNotificationId(alertId: String): Int = alertId.hashCode()
 
     private fun notifFingerprint(alert: RoadAlert, location: Location): String {
         val target = Location("").apply { latitude = alert.latitude; longitude = alert.longitude }
@@ -649,16 +812,24 @@ class AlertMonitorService : Service() {
         private const val LIVE_DISTANCE_MIN_MOVE_METERS = 5f
         private const val PASSED_DISTANCE_DELTA_METERS = 200f
         private const val PASSED_BEARING_DIFF_DEGREES = 100f
-        private const val MAX_NOTIFIED_IDS = 100
-        private const val MAX_VISIBLE_CAR_NOTIFICATIONS = 3
+        private const val MAX_VISIBLE_CAR_ALERTS = 6
+        private const val SUMMARY_NOTIFICATION_ID = 4101
+        private const val SUMMARY_NOTIFICATION_KEY = "summary"
+        private const val SUMMARY_ALERT_LINES = 4
+        private const val ACTION_REQUEST_OFFSET = 17_000
         private const val MAX_CACHED_ALERTS = 200
         private const val MAX_DISTANCE_TRACKING = 500
         private const val CAR_NOTIF_DISTANCE_BUCKET_METERS = 100f
         private const val DISTANCE_UI_BUCKET_METERS = 10f
         private const val MIN_UI_BROADCAST_INTERVAL_MILLIS = 2_000L
         private const val MAX_UI_BROADCAST_INTERVAL_MILLIS = 5_000L
+        private const val STALE_MISS_LIMIT = 2
+        private const val STALE_ALERT_GRACE_MILLIS = 90_000L
+        private const val ALERT_NOTIFICATION_TIMEOUT_MILLIS = 10 * 60_000L
         private const val ACTION_REPLY = "com.mg.wazealerts.ACTION_REPLY"
         private const val ACTION_MARK_READ = "com.mg.wazealerts.ACTION_MARK_READ"
+        private const val EXTRA_ALERT_ID = "extra_alert_id"
+        private const val EXTRA_ALERT_IDS = "extra_alert_ids"
         private const val KEY_REPLY = "key_reply"
         private const val HEARTBEAT_INTERVAL_DEFAULT_MILLIS = 5 * 60_000L
         private const val HEARTBEAT_INTERVAL_AA_MILLIS = 60_000L

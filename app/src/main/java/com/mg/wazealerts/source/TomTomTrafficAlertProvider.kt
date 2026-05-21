@@ -29,9 +29,7 @@ class TomTomTrafficAlertProvider : AlertProvider {
                     "&timeValidityFilter=present"
             )
             fetch(url).toAlerts(location, radiusMeters)
-        }.getOrElse {
-            emptyList()
-        }
+        }.getOrElse { throw it }
     }
 
     private fun fetch(url: URL): JSONObject {

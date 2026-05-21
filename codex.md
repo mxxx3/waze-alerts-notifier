@@ -14,7 +14,7 @@ Debug APK:
 app\build\outputs\apk\debug\app-debug.apk
 ```
 
-Current Android version: `0.9.32` / `versionCode 42`.
+Current Android version: `0.9.33` / `versionCode 43`.
 
 ## GitHub Workflow
 
@@ -32,8 +32,8 @@ Current Android version: `0.9.32` / `versionCode 42`.
 - Keep the phone UI compact and dashboard-like: status chips, grouped controls, and alert cards.
 - Keep phone alert direction/distance in a separate adjacent card next to the alert card. It should read as attached to the alert and match the alert card height.
 - Per-alert mute state is stored through `AlertStore` and must be checked before posting notifications.
-- `WazeLiveMapAlertProvider` uses the unofficial Waze Live Map GeoRSS endpoint; it must fail closed to an empty list because the endpoint can return 403 or change without notice. Supports FlareSolverr proxy routing via `AppSettings.flareSolverrUrl`; errors always logged via `AppLogger` tag `WazeLiveMap`.
-- `OpenStreetMapCameraProvider` uses Overpass API for fixed speed/red-light cameras; keep radius capped and fail closed because public Overpass instances rate-limit and can be unavailable.
+- `WazeLiveMapAlertProvider` uses the unofficial Waze Live Map GeoRSS endpoint; it must fail closed at the repository/reconciliation layer because the endpoint can return 403 or change without notice. Supports FlareSolverr proxy routing via `AppSettings.flareSolverrUrl`; errors always logged via `AppLogger` tag `WazeLiveMap`.
+- `OpenStreetMapCameraProvider` uses Overpass API for fixed speed/red-light cameras; keep radius capped and fail closed at the repository/reconciliation layer because public Overpass instances rate-limit and can be unavailable.
 - `TomTomTrafficAlertProvider` is the keyed global traffic provider for incidents, roadwork, jams, and hazards.
 - The demo provider is for local testing only and is off by default for new installs.
 - Public Waze documentation supports Deep Links, not a stable public read API for live Waze police/camera/roadwork alerts.
@@ -45,12 +45,15 @@ Current Android version: `0.9.32` / `versionCode 42`.
 - `AlertMonitorService` throttles UI broadcasts while moving so distance-only updates stay live without repainting the screen every location tick.
 - `MainActivity` countdown, nearest distance, and per-alert direction/distance labels update in place; avoid reintroducing `render()` / `setContentView()` on every timer tick.
 - Background monitoring intentionally separates `cached_alerts` from visible `active_alerts`: fetch wide, cache briefly, then write only current in-radius alerts to the UI/Android Auto list.
+- Provider-aware fetch results distinguish successful empty results from provider failures; missing alerts from successful providers should expire quickly while failed providers may retain cache briefly.
+- Android Auto alert notifications should reconcile to one urgent alert notification plus one summary notification. Keep frequent live direction/distance updates, but do not reintroduce multiple high-priority per-alert notifications.
 - Release `0.9.7` contains the media-browser-only Android Auto entry, direction arrows for every alert, and live distance updates without waiting for remote refresh.
 - Release `0.9.8` adds modernized View UI, configurable movement-cache settings, Android Auto title-level direction/distance display, and removes the fallback CarAppService.
 - Release `0.9.9` media-playback Android Auto integration was a bad fit because it showed as a player and still used the large pane; current implementation should remain notification-only.
 - Release `0.9.10` removes the Android Auto media-player surface, keeps Android Auto alert delivery notification-only, updates active alert notifications with live direction/distance, and keeps the phone dashboard awake while open.
 - Release `0.9.11` smooths countdown/distance updates, moves phone arrow/distance into an adjacent same-height card, and improves Android Auto notification delivery by posting ongoing navigation-category car notifications without requiring Google Maps detection.
 - Release `0.9.12` moves Controls (scan radius and refresh cadence) from `MainActivity` to `SettingsActivity`, and fixes Android Auto by replacing `CarAppExtender`/`CarNotificationManager` with `MessagingStyle`+`CATEGORY_MESSAGE`; removes `androidx.car.app` dependency.
+- Release `0.9.33` caps Android Auto notification volume to one urgent alert plus one summary, adds provider-aware stale-alert expiration, serializes remote refresh jobs to avoid stale repost races, persists notification ledger state for cleanup after process restarts, and makes `Mark as read` dismiss passed alert notifications.
 - Release `0.9.30` fixes "ahead only" filter not applying to Android Auto notifications: `syncAlertNotifications()` in `AlertMonitorService` now filters behind-alerts using the same `bearingDiff <= 75°` logic as the phone UI, active only when navigation is active and `routeFilterEnabled` is set.
 - Release `0.9.27` fixes alert cards not disappearing when driving past them without active navigation (`updatePassedAlerts()` now runs regardless of `isMapsNavigating`; `displayAlerts()` in `MainActivity` always filters passed alerts). Fixes Android Auto notifications not appearing: adds `automotive_app_desc.xml` with `<uses name="notification"/>` + `com.google.android.gms.car.application` meta-data in manifest; adds `SEMANTIC_ACTION_MARK_AS_READ` action alongside the existing reply action (both required for Android Auto HUN delivery).
 - Release `0.9.16` introduces `WazeWebViewFetcher`: hidden WebView that loads waze.com/live-map/, waits for JS cookies, then calls georss via JS fetch() from inside the browser context. WazeLiveMapAlertProvider now takes Context. AlertRepository.destroy() → AlertMonitorService.onDestroy(). FlareSolverr remains optional via flareSolverrUrl setting.

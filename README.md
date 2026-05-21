@@ -2,7 +2,7 @@
 
 Android/Kotlin prototype for nearby road-alert notifications.
 
-Current version: `0.9.32` (`versionCode 42`).
+Current version: `0.9.33` (`versionCode 43`).
 
 ## What works
 
@@ -15,11 +15,15 @@ Current version: `0.9.32` (`versionCode 42`).
 - Android notification channels for monitoring and road alerts.
 - Android Auto support through dynamic car notifications instead of a media-player or template app surface.
 - Google Maps navigation notification detection for route-adjacent native alerts around the live device position.
-- Waze Deep Link on alert notifications: tapping an alert opens Waze or Waze Live Map at that alert location.
+- Alert notification taps open the dashboard; per-alert navigation controls can open Waze for the selected alert location.
 - Reverse-geocoded alert addresses in the phone UI, phone notifications, and Android Auto.
 - Wide movement cache: while monitoring, the app fetches a larger alert area and only displays currently relevant alerts inside the selected radius.
 - Movement cache controls in Settings for cache time, min/max cache radius, radius expansion, and visible alert limit.
 - Direction + live distance in a dedicated adjacent phone alert card and dynamic Android Auto alert notifications.
+- Android Auto notification volume is capped to one urgent alert plus a summary notification, with live direction and distance still updated frequently.
+- Provider-aware stale-alert cleanup: if a provider refresh succeeds and an old alert disappears, it expires quickly instead of lingering for the full movement-cache TTL.
+- Notification cleanup is reconciled against a persistent ledger so stale road-alert notifications are cancelled even after process restarts.
+- Android Auto `Mark as read` now dismisses the related alert(s) instead of being a no-op.
 - Phone dashboard keeps the screen awake while it is open.
 - Service watchdog keeps `AlertMonitorService` alive while monitoring is enabled: AlarmManager heartbeat (60 s when Android Auto is connected, 5 min otherwise), WorkManager periodic backup every 15 min, auto-start after device boot, and AlarmManager-based restart on uncaught exceptions or unexpected service destruction.
 - Stale alert notifications are swept on service start and on `onDestroy()`, so notifications no longer linger after a process kill or when monitoring is stopped.
@@ -72,7 +76,7 @@ Open the app, grant permissions, and enable background monitoring. On Android 11
 
 The app does not expose an Android Auto launcher, template, or media-player surface. It uses car-compatible alert notifications so Google Maps or Waze can remain the primary Android Auto screen.
 
-Each active road-alert notification is updated from live location data with the current arrow, relative direction, and distance. Tapping an alert opens the Waze deep link for that alert.
+The closest urgent road alert is posted as an individual car-compatible notification, while additional nearby alerts are folded into a summary notification. Both are updated from live location data with current arrow, relative direction, and distance. Tapping an alert opens the app dashboard.
 
 Release `0.9.11` keeps the corrected notification-only Android Auto path, posts road-alert notifications as ongoing navigation-category car notifications, and removes the dependency on Google Maps notification detection before alert notifications can appear.
 
@@ -82,12 +86,12 @@ The APK no longer contains Android Auto media-browser metadata or the fallback `
 
 Google Maps route geometry is not exposed to third-party apps. When notification access is granted, `MapsNavigationListener` detects active Google Maps navigation notifications, starts monitoring if enabled, and `AlertMonitorService` posts native road-alert notifications around the live device position.
 
-During movement, remote providers are queried with a wider cache radius than the visible radius. Cached alerts live briefly and are re-filtered on every location update, so Android Auto and the phone UI show only current in-radius alerts while the app keeps nearby upcoming alerts ready without another network refresh. Distance and direction are recalculated from live location updates, and phone labels are updated in place to avoid distracting full-screen refreshes while driving.
+During movement, remote providers are queried with a wider cache radius than the visible radius. Cached alerts are re-filtered on every location update, and provider-successful refreshes expire missing alerts quickly so Android Auto and the phone UI show only current in-radius alerts while the app keeps nearby upcoming alerts ready without another network refresh. Distance and direction are recalculated from live location updates, and phone labels are updated in place to avoid distracting full-screen refreshes while driving.
 
 ## Release
 
 Release tags use `v<versionName>`. The current debug release asset should be named:
 
 ```text
-TrafficAlertsNotifier-debug-v0.9.11.apk
+TrafficAlertsNotifier-debug-v0.9.33.apk
 ```

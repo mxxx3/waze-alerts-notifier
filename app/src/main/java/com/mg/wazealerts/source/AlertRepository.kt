@@ -5,10 +5,17 @@ import android.location.Geocoder
 import android.location.Location
 import com.mg.wazealerts.model.RoadAlert
 import com.mg.wazealerts.settings.AppSettings
+import com.mg.wazealerts.AppLogger
 import java.io.IOException
 import java.util.Locale
 
 private const val DEDUP_RADIUS_METERS = 200f
+
+data class AlertFetchResult(
+    val alerts: List<RoadAlert>,
+    val successfulProviders: Set<String>,
+    val failedProviders: Set<String>
+)
 
 class AlertRepository(context: Context) {
     private val appContext = context.applicationContext
@@ -17,19 +24,54 @@ class AlertRepository(context: Context) {
     private val tomTomProvider = TomTomTrafficAlertProvider()
     private val osmCameraProvider = OpenStreetMapCameraProvider(context.applicationContext)
 
-    suspend fun nearby(location: Location, radiusMeters: Int? = null): List<RoadAlert> {
+    suspend fun nearby(location: Location, radiusMeters: Int? = null): List<RoadAlert> =
+        nearbyResult(location, radiusMeters).alerts
+
+    suspend fun nearbyResult(location: Location, radiusMeters: Int? = null): AlertFetchResult {
         val settings = AppSettings(appContext)
         val requestedRadius = radiusMeters ?: settings.radiusMeters
-        return (
-            wazeProvider.alertsNear(location, settings, requestedRadius) +
-                osmCameraProvider.alertsNear(location, settings, requestedRadius) +
-                tomTomProvider.alertsNear(location, settings, requestedRadius) +
+
+        val specs = listOf(
+            ProviderSpec("waze", settings.wazeLiveMapEnabled) {
+                wazeProvider.alertsNear(location, settings, requestedRadius)
+            },
+            ProviderSpec("osm-camera", settings.osmCamerasEnabled) {
+                osmCameraProvider.alertsNear(location, settings, requestedRadius)
+            },
+            ProviderSpec("tomtom", settings.tomTomApiKey.isNotBlank()) {
+                tomTomProvider.alertsNear(location, settings, requestedRadius)
+            },
+            ProviderSpec("demo", settings.demoAlertsEnabled) {
                 demoProvider.alertsNear(location, settings, requestedRadius)
-            )
+            }
+        )
+
+        val alerts = mutableListOf<RoadAlert>()
+        val successful = mutableSetOf<String>()
+        val failed = mutableSetOf<String>()
+
+        for (spec in specs) {
+            if (!spec.enabled) {
+                successful += spec.name
+                continue
+            }
+            runCatching { spec.fetch() }
+                .onSuccess {
+                    successful += spec.name
+                    alerts += it
+                }
+                .onFailure {
+                    failed += spec.name
+                    AppLogger.w(TAG, "${spec.name} provider failed: ${it.javaClass.simpleName}: ${it.message}")
+                }
+        }
+
+        val filtered = alerts
             .filter { it.kind in settings.enabledKinds() }
             .sortedBy { it.distanceMeters }
             .deduplicateNearby()
             .map { it.withResolvedAddress() }
+        return AlertFetchResult(filtered, successful, failed)
     }
 
     private fun RoadAlert.withResolvedAddress(): RoadAlert {
@@ -81,4 +123,14 @@ class AlertRepository(context: Context) {
 
     private fun coordinateLabel(latitude: Double, longitude: Double): String =
         "%.5f, %.5f".format(Locale.US, latitude, longitude)
+
+    private data class ProviderSpec(
+        val name: String,
+        val enabled: Boolean,
+        val fetch: suspend () -> List<RoadAlert>
+    )
+
+    companion object {
+        private const val TAG = "AlertRepository"
+    }
 }

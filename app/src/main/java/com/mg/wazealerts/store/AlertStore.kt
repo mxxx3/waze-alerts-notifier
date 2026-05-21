@@ -59,6 +59,55 @@ class AlertStore(context: Context) {
             .apply()
     }
 
+    fun markAlertsSeen(alertIds: Collection<String>, seenAtMillis: Long = System.currentTimeMillis()) {
+        if (alertIds.isEmpty()) return
+        val seen = alertSeenAt().toMutableMap()
+        val missing = alertMissingCounts().toMutableMap()
+        alertIds.forEach { id ->
+            seen[id] = seenAtMillis
+            missing.remove(id)
+        }
+        prefs.edit()
+            .putString(KEY_ALERT_LAST_SEEN_AT, seen.toLongJsonObject().toString())
+            .putString(KEY_ALERT_MISSING_COUNTS, missing.toIntJsonObject().toString())
+            .apply()
+    }
+
+    fun alertLastSeenAt(alertId: String): Long? = alertSeenAt()[alertId]
+
+    fun recordAlertMissing(alertId: String): Int {
+        val missing = alertMissingCounts().toMutableMap()
+        val count = (missing[alertId] ?: 0) + 1
+        missing[alertId] = count
+        prefs.edit().putString(KEY_ALERT_MISSING_COUNTS, missing.toIntJsonObject().toString()).apply()
+        return count
+    }
+
+    fun pruneAlertLifecycle(retainedAlertIds: Set<String>) {
+        val seen = alertSeenAt().filterKeys { it in retainedAlertIds }
+        val missing = alertMissingCounts().filterKeys { it in retainedAlertIds }
+        prefs.edit()
+            .putString(KEY_ALERT_LAST_SEEN_AT, seen.toLongJsonObject().toString())
+            .putString(KEY_ALERT_MISSING_COUNTS, missing.toIntJsonObject().toString())
+            .apply()
+    }
+
+    fun activeNotificationIds(): Set<Int> =
+        prefs.getStringSet(KEY_ACTIVE_NOTIFICATION_IDS, emptySet())
+            .orEmpty()
+            .mapNotNull { it.toIntOrNull() }
+            .toSet()
+
+    fun saveActiveNotificationIds(ids: Set<Int>) {
+        prefs.edit()
+            .putStringSet(KEY_ACTIVE_NOTIFICATION_IDS, ids.map { it.toString() }.toSet())
+            .apply()
+    }
+
+    fun clearActiveNotificationIds() {
+        prefs.edit().remove(KEY_ACTIVE_NOTIFICATION_IDS).apply()
+    }
+
     fun isMuted(alertId: String): Boolean = mutedIds().contains(alertId)
 
     fun setMuted(alertId: String, muted: Boolean) {
@@ -107,11 +156,46 @@ class AlertStore(context: Context) {
             reportedAtMillis = getLong("reportedAtMillis")
         )
 
+    private fun alertSeenAt(): Map<String, Long> =
+        prefs.getString(KEY_ALERT_LAST_SEEN_AT, null)
+            ?.toLongMap()
+            ?: emptyMap()
+
+    private fun alertMissingCounts(): Map<String, Int> =
+        prefs.getString(KEY_ALERT_MISSING_COUNTS, null)
+            ?.toIntMap()
+            ?: emptyMap()
+
+    private fun Map<String, Long>.toLongJsonObject(): JSONObject =
+        JSONObject().also { json -> forEach { (key, value) -> json.put(key, value) } }
+
+    private fun Map<String, Int>.toIntJsonObject(): JSONObject =
+        JSONObject().also { json -> forEach { (key, value) -> json.put(key, value) } }
+
+    private fun String.toLongMap(): Map<String, Long> =
+        runCatching {
+            val json = JSONObject(this)
+            buildMap {
+                json.keys().forEach { key -> put(key, json.optLong(key, 0L)) }
+            }.filterValues { it > 0L }
+        }.getOrDefault(emptyMap())
+
+    private fun String.toIntMap(): Map<String, Int> =
+        runCatching {
+            val json = JSONObject(this)
+            buildMap {
+                json.keys().forEach { key -> put(key, json.optInt(key, 0)) }
+            }.filterValues { it > 0 }
+        }.getOrDefault(emptyMap())
+
     companion object {
         private const val KEY_ACTIVE_ALERTS = "active_alerts"
         private const val KEY_CACHED_ALERTS = "cached_alerts"
         private const val KEY_CACHED_ALERTS_FETCHED_AT = "cached_alerts_fetched_at"
         private const val KEY_MUTED_ALERTS = "muted_alerts"
         private const val KEY_PASSED_ALERTS = "passed_alerts"
+        private const val KEY_ALERT_LAST_SEEN_AT = "alert_last_seen_at"
+        private const val KEY_ALERT_MISSING_COUNTS = "alert_missing_counts"
+        private const val KEY_ACTIVE_NOTIFICATION_IDS = "active_notification_ids"
     }
 }

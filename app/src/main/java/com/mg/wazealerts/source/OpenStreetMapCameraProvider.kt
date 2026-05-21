@@ -38,7 +38,7 @@ class OpenStreetMapCameraProvider(private val context: Context) : AlertProvider 
             filterByRadius(allCameras, location, radiusMeters)
         }.getOrElse {
             AppLogger.w("OSM", "Overpass fetch failed: ${it.message}")
-            emptyList()
+            throw it
         }
     }
 

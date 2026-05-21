@@ -50,7 +50,7 @@ class WazeLiveMapAlertProvider(context: Context) : AlertProvider {
                 mode == "FlareSolverr" && e is org.json.JSONException -> sessionWarmedUp = false
                 mode == "WebView" -> fetcher.invalidate()
             }
-            emptyList()
+            throw e
         }
     }
 
