@@ -1,101 +1,205 @@
 # Traffic Alerts Notifier
 
-Android/Kotlin prototype for nearby road-alert notifications.
+Android app for nearby road-alert notifications while driving.
 
-Current version: `0.9.34` (`versionCode 44`).
+Repository name is still `waze-alerts-notifier`, but the current app identity in code and UI is **Traffic Alerts Notifier**.
 
-## What works
+Current version:
+- `versionName`: `0.9.34`
+- `versionCode`: `44`
+- application ID: `com.mg.trafficalerts`
 
-- Kotlin Android app with dashboard and settings screens.
-- Android package/application ID is `com.mg.trafficalerts`.
-- User-configurable monitoring, notifications, radius, refresh time, live sources, demo source, and alert-type filters.
-- Experimental Waze Live Map alert source using radius-based bounding boxes.
-- OpenStreetMap/Overpass fixed-camera source for speed cameras and red-light cameras.
-- Optional TomTom Traffic API source for global traffic incidents when an API key is saved.
-- Foreground location service for background monitoring.
-- Android notification channels for monitoring and road alerts.
-- Android Auto support through dynamic car notifications instead of a media-player or template app surface.
-- Google Maps navigation notification detection for route-adjacent native alerts around the live device position.
-- Alert notification taps open the dashboard; per-alert navigation controls can open Waze for the selected alert location.
-- Reverse-geocoded alert addresses in the phone UI, phone notifications, and Android Auto.
-- Wide movement cache: while monitoring, the app fetches a larger alert area and only displays currently relevant alerts inside the selected radius.
-- Movement cache controls in Settings for cache time, min/max cache radius, radius expansion, and visible alert limit.
-- Direction + live distance in a dedicated adjacent phone alert card and dynamic Android Auto alert notifications.
-- Android Auto notification volume is capped to one urgent alert plus a summary notification, with live direction and distance still updated frequently.
-- Provider-aware stale-alert cleanup: if a provider refresh succeeds and an old alert disappears, it expires quickly instead of lingering for the full movement-cache TTL.
-- Notification cleanup is reconciled against a persistent ledger so stale road-alert notifications are cancelled even after process restarts.
-- Android Auto `Mark as read` now dismisses the related alert(s) instead of being a no-op.
-- Diagnostics panel in Settings shows provider health, runtime state, and a test alert notification button.
-- When no alerts are active, the dashboard shows source status so failures are distinguishable from empty roads.
-- Alert priority now considers category, ahead/behind direction, distance, and provider; repeated heads-up alerts have a cooldown while live status updates remain frequent.
-- Launcher icon refreshed with the Traffic Alerts identity.
-- Phone dashboard keeps the screen awake while it is open.
-- Service watchdog keeps `AlertMonitorService` alive while monitoring is enabled: AlarmManager heartbeat (60 s when Android Auto is connected, 5 min otherwise), WorkManager periodic backup every 15 min, auto-start after device boot, and AlarmManager-based restart on uncaught exceptions or unexpected service destruction.
-- Stale alert notifications are swept on service start and on `onDestroy()`, so notifications no longer linger after a process kill or when monitoring is stopped.
-- Settings → Permissions panel lists each runtime/special-access permission (Fine location, Background location, Notifications, Notification access, Exact alarms, Unrestricted battery) with a green/red status badge and a `Grant` / `Open settings` button per row.
-- Demo alert source toggle removed from Settings; only real providers (Waze Live Map, OpenStreetMap cameras, optional TomTom) are surfaced in the UI.
-- Smooth live movement updates: countdown, nearest distance, and per-alert direction/distance labels update without rebuilding the full phone screen.
-- Main dashboard for radius, refresh time, active alerts, navigation, and per-alert mute controls.
-- Appearance setting with System, Light, and Dark modes.
-- Compact modern UI with status chips, grouped controls, and alert cards.
+## What it does
 
-## Alert Sources
+The app runs a foreground location service, fetches nearby traffic alerts from one or more providers, keeps a local cache while you move, and posts live notifications on the phone and in Android Auto.
 
-The app uses `AlertProvider` as a replaceable source boundary:
+Supported alert categories include:
+- police
+- cameras
+- accidents
+- traffic jams
+- hazards
+- roadworks / closures
 
-- `WazeLiveMapAlertProvider` calls `https://www.waze.com/live-map/api/georss` with the current location, configured radius, and auto-selected `na`, `il`, or `row` environment. It maps Waze police, camera, hazard, accident, jam, and closure reports into app categories.
-- `OpenStreetMapCameraProvider` calls Overpass API for fixed camera data tagged as `highway=speed_camera` or `type=enforcement` with `enforcement=maxspeed`, `traffic_signals`, `red_light_camera`, or `average_speed`. It is enabled by default and caps its Overpass search radius at 25 km.
-- `TomTomTrafficAlertProvider` calls TomTom Traffic API v5 `incidentDetails` when a TomTom API key is saved in Settings. This is the more stable global source for accidents, jams, closures, roadworks, and hazards.
-- `DemoAlertProvider` generates test alerts around the current location. It is off by default for new installs.
+## Main features
 
-Official Waze developer documentation still does not expose a stable public read API for nearby Waze user reports. The Waze Live Map provider is experimental and may return HTTP 403 or change without notice. If it fails, the app keeps running and falls back to other enabled sources. OpenStreetMap camera coverage depends on local mapping quality and represents fixed cameras, not temporary/mobile police traps.
+- Background monitoring with a foreground location service.
+- Main dashboard with radius, refresh interval, active alerts, navigation, and per-alert mute controls.
+- Live distance and relative direction updates as the device moves.
+- Reverse-geocoded addresses in the phone UI and notifications.
+- Provider health diagnostics in Settings.
+- In-app log viewer with Clear / Copy / Export actions.
+- Appearance modes: System, Light, Dark.
+- Notification actions including `Reply` and `Mark as read`.
+- Alert notifications open the dashboard, and per-alert navigation can open the selected alert in Google Maps or Waze.
+
+## Alert sources
+
+The app uses a replaceable provider boundary via `AlertProvider`.
+
+### Waze Live Map
+
+`WazeLiveMapAlertProvider` queries Waze Live Map `georss` data for a bounding box around the current location.
+
+Notes:
+- This source is **experimental**.
+- Waze does not provide a stable public read API for nearby user reports.
+- The implementation uses an embedded `WebView` fetch/interception flow to obtain the Waze data needed by the app.
+- Waze may change behavior at any time, and this source can fail with HTTP 403 or other breakage.
+
+Mapped categories currently include Waze police, cameras, accidents, hazards, jams, and road closures.
+
+### OpenStreetMap cameras
+
+`OpenStreetMapCameraProvider` uses Overpass for fixed camera data, including speed cameras and red-light cameras.
+
+Notes:
+- enabled by default
+- capped to a 25 km Overpass query radius
+- coverage depends on local OpenStreetMap quality
+- this is fixed-camera data, not temporary/mobile police reports
+
+### TomTom traffic incidents
+
+`TomTomTrafficAlertProvider` uses TomTom Traffic API v5 `incidentDetails` when a TomTom API key is saved in Settings.
+
+This is the more stable global provider for:
+- accidents
+- jams
+- closures
+- roadworks
+- hazards
+
+### Demo provider
+
+`DemoAlertProvider` still exists in code for testing, but it is not exposed in the normal Settings UI.
+
+## How monitoring works
+
+- The app listens for live device location updates.
+- It fetches alerts using a **wider cache radius** than the visible radius.
+- Cached alerts are re-filtered against the live position while driving.
+- When a provider refresh succeeds and an old alert disappears, stale alerts are expired quickly instead of lingering for the full cache TTL.
+- Nearby duplicate alerts from different providers are deduplicated.
+- Notification cleanup is reconciled against persisted state so stale notifications can be removed even after process restarts.
+
+## Android Auto behavior
+
+The app uses **notification-based Android Auto integration**.
+
+It intentionally does **not** expose:
+- an Android Auto launcher surface
+- a template app UI
+- a media browser / media player service
+
+Instead, it posts car-compatible alert notifications so Google Maps or Waze can remain the main Android Auto screen.
+
+Behavior:
+- the closest urgent alert is shown as an individual car notification
+- additional nearby alerts are grouped into a summary notification
+- distance and direction continue updating from live location data
+- `Mark as read` dismisses the related alert(s)
+
+When notification access is granted, `MapsNavigationListener` can detect active Google Maps navigation notifications and help the app keep route-adjacent alerts relevant to the current drive.
+
+## Reliability / keep-alive
+
+While monitoring is enabled, the app tries to stay alive using:
+- foreground service
+- `AlarmManager` heartbeat
+  - every 60 s when Android Auto is connected
+  - every 5 min otherwise
+- `WorkManager` periodic backup worker
+- auto-start after boot and app replacement
+- restart scheduling on crash or unexpected service destruction
+
+On startup and shutdown, stale road-alert notifications are swept so they do not linger after process death or when monitoring stops.
+
+## Permissions and settings
+
+The Settings screen includes a dedicated Permissions panel with per-permission status and shortcuts for:
+- Fine location
+- Background location
+- Notifications
+- Notification listener access
+- Exact alarms
+- Unrestricted battery / battery optimization settings
+
+Other configurable settings include:
+- monitoring on/off
+- notifications on/off
+- visible alert radius
+- poll interval
+- appearance mode
+- alert type filters
+- navigation app
+- cache TTL
+- min / max cache radius
+- cache radius multiplier
+- visible alert limit
+- enabled sources
+- TomTom API key
+
+## Project structure
+
+Key files:
+- `app/src/main/java/com/mg/trafficalerts/monitor/AlertMonitorService.kt` - foreground monitoring, location updates, notifications
+- `app/src/main/java/com/mg/trafficalerts/source/AlertRepository.kt` - provider orchestration, filtering, dedup, address resolution
+- `app/src/main/java/com/mg/trafficalerts/source/WazeLiveMapAlertProvider.kt` - Waze source mapping and fetch selection
+- `app/src/main/java/com/mg/trafficalerts/source/WazeWebViewFetcher.kt` - Waze `WebView` interception flow
+- `app/src/main/java/com/mg/trafficalerts/SettingsActivity.kt` - settings, diagnostics, permissions UI
+- `app/src/main/java/com/mg/trafficalerts/MainActivity.kt` - main dashboard
+- `app/src/main/java/com/mg/trafficalerts/LogActivity.kt` - in-app log viewer
 
 ## Build
+
+### Windows
 
 ```powershell
 .\gradlew.bat assembleDebug
 ```
 
-The debug APK is generated at:
+### Linux / macOS
+
+If `gradlew` is not executable in your checkout, run:
+
+```bash
+chmod +x ./gradlew
+./gradlew assembleDebug
+```
+
+Debug APK output:
 
 ```text
-app\build\outputs\apk\debug\app-debug.apk
+app/build/outputs/apk/debug/app-debug.apk
 ```
 
 ## Install for local testing
 
-```powershell
-adb install -r app\build\outputs\apk\debug\app-debug.apk
+```bash
+adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
-Open the app, grant permissions, and enable background monitoring. On Android 11+ background location may need to be granted from the system app settings screen.
+Then:
+- open the app
+- grant the required permissions
+- enable background monitoring
+- optionally add a TomTom API key for broader incident coverage
 
-## App Screens
+On Android 11+, background location may need to be granted from the system app settings screen.
 
-- Main screen: radius slider (crash-safe drag), refresh time slider, active alert list, per-alert `Navigate`, and per-alert `Mute` / `Unmute`.
-- **Navigation panel** (auto-shown when Google Maps is navigating): current geocoded address, route step text, nearest alert with distance, bearing direction chip, and "Ahead only" toggle.
-- **Log screen** ("Log" button in header): in-app log viewer with Clear / Copy / Export.
-- Settings screen: appearance mode, Waze Live Map source, OpenStreetMap cameras, optional TomTom API key, diagnostics, background monitoring, global notifications, alert type switches, and permission/system settings shortcuts.
+## Known limitations
 
-## Android Auto
+- The Waze source is unofficial and may break at any time.
+- OpenStreetMap camera coverage varies by region.
+- TomTom incidents require a user-provided API key.
+- Google Maps route geometry is not exposed to third-party apps, so route awareness depends on notification/state signals rather than full route access.
 
-The app does not expose an Android Auto launcher, template, or media-player surface. It uses car-compatible alert notifications so Google Maps or Waze can remain the primary Android Auto screen.
+## Release notes
 
-The closest urgent road alert is posted as an individual car-compatible notification, while additional nearby alerts are folded into a summary notification. Both are updated from live location data with current arrow, relative direction, and distance. Tapping an alert opens the app dashboard.
+Release tags use `v<versionName>`.
 
-Release `0.9.11` keeps the corrected notification-only Android Auto path, posts road-alert notifications as ongoing navigation-category car notifications, and removes the dependency on Google Maps notification detection before alert notifications can appear.
-
-Android Auto and the head unit own final notification presentation. The app intentionally avoids `MediaBrowserService`, `MediaSession`, and `CarAppService` entries because opening those surfaces can promote the app into a large split-screen pane.
-
-The APK no longer contains Android Auto media-browser metadata or the fallback `CarAppService` class.
-
-Google Maps route geometry is not exposed to third-party apps. When notification access is granted, `MapsNavigationListener` detects active Google Maps navigation notifications, starts monitoring if enabled, and `AlertMonitorService` posts native road-alert notifications around the live device position.
-
-During movement, remote providers are queried with a wider cache radius than the visible radius. Cached alerts are re-filtered on every location update, and provider-successful refreshes expire missing alerts quickly so Android Auto and the phone UI show only current in-radius alerts while the app keeps nearby upcoming alerts ready without another network refresh. Distance and direction are recalculated from live location updates, and phone labels are updated in place to avoid distracting full-screen refreshes while driving.
-
-## Release
-
-Release tags use `v<versionName>`. The current debug release asset should be named:
+For the current version, the debug release asset name should be:
 
 ```text
 TrafficAlertsNotifier-debug-v0.9.34.apk
